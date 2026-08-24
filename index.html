@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src https://api.open-meteo.com; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>umbrella check</title>
+</head>
+<body style="font-family: sans-serif; text-align: center; margin-top: 10px; background-color: black; color: white; margin-left: 5px; margin-right: 5px;">
+
+<div style="display: flex; flex-direction: row; justify-content: center; gap: 10px; width: 100%; max-width: 900px; margin: auto;">
+  
+  <div style="flex: 1; min-width: 0; background: rgba(255,255,255,0.05); padding: 10px; border-radius: 10px;">
+    <h2 id="t0_date-display" style="margin-bottom: 5px; font-size: 18px;"></h2>
+    <h3 style="margin-top: 0; font-weight: normal; color: #aaa; font-size: 16px;">today</h3>
+    <h2 id="t0_status" role="status" aria-live="polite" style="font-size: 22px; min-height: 50px;">checking...</h2>
+    
+    <div id="t0_breakdown" style="margin-top: 15px; display: none;">
+      <div id="t0_hours" role="list" aria-label="Today's hourly rain checks" style="display: inline-block; text-align: left; font-family: monospace; white-space: nowrap; font-size: clamp(9px, 2.9vw, 12px); background: rgba(255,255,255,0.1); padding: clamp(5px, 1.5vw, 8px); border-radius: 8px; color: white;"></div>
+      <div id="t0_symbol" aria-hidden="true" style="font-size: 28px; margin-top: 15px; text-align: center;"></div>
+      <div id="t0_note" style="min-height: 15px; margin-top: 3px; color: #aaa; font-size: 11px;"></div>
+    </div>
+  </div>
+
+  <div style="flex: 1; min-width: 0; background: rgba(255,255,255,0.05); padding: 10px; border-radius: 10px;">
+    <h2 id="t1_date-display" style="margin-bottom: 5px; font-size: 18px;"></h2>
+    <h3 style="margin-top: 0; font-weight: normal; color: #aaa; font-size: 16px;">tomorrow</h3>
+    <h2 id="t1_status" role="status" aria-live="polite" style="font-size: 22px; min-height: 50px;">checking...</h2>
+    
+    <div id="t1_breakdown" style="margin-top: 15px; display: none;">
+      <div id="t1_hours" role="list" aria-label="Tomorrow's hourly rain checks" style="display: inline-block; text-align: left; font-family: monospace; white-space: nowrap; font-size: clamp(9px, 2.9vw, 12px); background: rgba(255,255,255,0.1); padding: clamp(5px, 1.5vw, 8px); border-radius: 8px; color: white;"></div>
+      <div id="t1_symbol" aria-hidden="true" style="font-size: 28px; margin-top: 15px; text-align: center;"></div>
+      <div id="t1_note" style="min-height: 15px; margin-top: 3px; color: #aaa; font-size: 11px;"></div>
+    </div>
+  </div>
+
+</div>
+
+<div style="margin: 10px auto 0; min-height: 24px; color: #aaa; font-size: 12px;">
+  <span id="route_status" role="status" aria-live="polite">checking the peterborough route...</span>
+  <button id="forecast_retry" type="button" style="display: none; margin-left: 6px; border: 1px solid #777; border-radius: 6px; background: #222; color: white; padding: 4px 8px;">try again</button>
+</div>
+
+<div style="margin-top: 5px; font-size: 11px;">
+  <a href="https://weather.metoffice.gov.uk/maps-and-charts/rainfall-radar-forecast-map?lat=52.57&amp;lon=-0.25&amp;map=Rainfall&amp;zoom=10" target="_blank" rel="noopener noreferrer" aria-label="Open the scrollable Met Office rain map in a new tab" style="display: inline-block; border: 1px solid #555; border-radius: 6px; padding: 6px 9px; color: #8ecbff; text-decoration: none;">scrollable rain map ↗</a>
+  <div style="margin-top: 4px; color: #666;">forecast blocks ≈ 2 km · recent radar ≈ 1 km</div>
+</div>
+
+<div style="margin-top: 4px; font-size: 11px;">
+  <a href="https://open-meteo.com/" style="color: #777;">weather data by open-meteo.com</a>
+  <span style="color: #555;"> · rain = more than 0.1 mm</span>
+</div>
+
+<script>
+const RAIN_THRESHOLD_MM = 0.1;
+const PETERBOROUGH_TIME_ZONE = 'Europe/London';
+// Coarse public Peterborough route-area samples. This page does not access or
+// store a device location.
+const PUBLIC_FORECAST_POINTS = [
+  { latitude: '52.56', longitude: '-0.28' },
+  { latitude: '52.58', longitude: '-0.25' }
+];
+const CHECKS = [
+  { startHour: 8, forecastPoints: [0, 1] },
+  { startHour: 11, forecastPoints: [1] },
+  { startHour: 17, forecastPoints: [0, 1] },
+  { startHour: 18, forecastPoints: [0, 1] },
+  { startHour: 19, forecastPoints: [0, 1] },
+  { startHour: 20, forecastPoints: [0, 1] }
+];
+const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+function formatDateKey(dateKey) {
+  const [yyyy, mm, dd] = dateKey.split('-').map(Number);
+  const date = new Date(Date.UTC(yyyy, mm - 1, dd, 12));
+  return days[date.getUTCDay()] + "\n" + String(dd).padStart(2, '0') + "/" + String(mm).padStart(2, '0') + "/" + yyyy;
+}
+
+function getZonedDateKey(timeZone, now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+  return values.year + '-' + values.month + '-' + values.day;
+}
+
+function addDays(dateKey, amount) {
+  const [year, month, day] = dateKey.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + amount, 12));
+  return date.getUTCFullYear() + '-' + String(date.getUTCMonth() + 1).padStart(2, '0') + '-' + String(date.getUTCDate()).padStart(2, '0');
+}
+
+function setInitialDates(todayKey = getZonedDateKey(PETERBOROUGH_TIME_ZONE)) {
+  document.getElementById('t0_date-display').innerText = formatDateKey(todayKey);
+  document.getElementById('t1_date-display').innerText = formatDateKey(addDays(todayKey, 1));
+}
+
+function getRainState(amount) {
+  if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0) {
+    return 'unavailable';
+  }
+  return amount > RAIN_THRESHOLD_MM ? 'rain' : 'no rain';
+}
+
+function getCurrentLocalTimeKey(timeZone, now = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+  return values.year + '-' + values.month + '-' + values.day + 'T' + values.hour + ':' + values.minute;
+}
+
+function indexHourlyForecast(data) {
+  const times = data && data.hourly && data.hourly.time;
+  const precipitation = data && data.hourly && data.hourly.precipitation;
+  if (!Array.isArray(times) || !Array.isArray(precipitation) || times.length !== precipitation.length || times.length === 0) {
+    throw new Error('The hourly forecast is incomplete.');
+  }
+
+  const timePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+  if (times.some(time => typeof time !== 'string' || !timePattern.test(time))) {
+    throw new Error('The hourly forecast contains an invalid time.');
+  }
+
+  const forecast = new Map();
+  for (let index = 0; index < times.length; index += 1) {
+    // Open-Meteo timestamps precipitation at the end of the preceding hour.
+    forecast.set(times[index], getRainState(precipitation[index]));
+  }
+  return forecast;
+}
+
+function combineStates(states) {
+  if (states.includes('rain')) {
+    return 'rain';
+  }
+  if (states.includes('unavailable')) {
+    return 'unavailable';
+  }
+  return 'no rain';
+}
+
+function buildChecks(dateKey, forecasts, currentTimeKey = null) {
+  return CHECKS.map(check => {
+    const start = dateKey + 'T' + String(check.startHour).padStart(2, '0') + ':00';
+    const end = dateKey + 'T' + String(check.startHour + 1).padStart(2, '0') + ':00';
+    const states = check.forecastPoints.map(pointIndex => {
+      const forecast = forecasts[pointIndex];
+      return forecast && forecast.has(end) ? forecast.get(end) : 'unavailable';
+    });
+    return {
+      label: String(check.startHour).padStart(2, '0') + ':00',
+      start,
+      end,
+      state: combineStates(states),
+      done: Boolean(currentTimeKey && end <= currentTimeKey)
+    };
+  });
+}
+
+function renderCheckList(dayIndex, checks) {
+  const list = document.getElementById('t' + dayIndex + '_hours');
+  list.replaceChildren();
+
+  checks.forEach(check => {
+    const row = document.createElement('div');
+    row.setAttribute('role', 'listitem');
+    const displayedState = check.done ? 'done' : (check.state === 'unavailable' ? 'unknown' : check.state);
+    row.setAttribute('aria-label', check.label + ': ' + displayedState);
+    row.innerText = check.label + ' | ' + displayedState;
+    if (check.done) {
+      row.style.color = '#666';
+    } else if (check.state === 'rain') {
+      row.style.color = '#8ecbff';
+    } else if (check.state === 'unavailable') {
+      row.style.color = '#aaa';
+    }
+    list.appendChild(row);
+  });
+}
+
+function decideUmbrella(checks) {
+  const remaining = checks.filter(check => !check.done);
+  if (remaining.length === 0) {
+    return { answer: 'NO', note: 'today\'s trips are done' };
+  }
+  if (remaining.some(check => check.state === 'rain')) {
+    return { answer: 'YES', note: '' };
+  }
+  if (remaining.some(check => check.state === 'unavailable')) {
+    return { answer: 'YES', note: 'forecast incomplete — safer to take it' };
+  }
+  return { answer: 'NO', note: '' };
+}
+
+function renderDay(dayIndex, dateKey, checks) {
+  document.getElementById('t' + dayIndex + '_date-display').innerText = formatDateKey(dateKey);
+  document.getElementById('t' + dayIndex + '_breakdown').style.display = 'block';
+  renderCheckList(dayIndex, checks);
+
+  const decision = decideUmbrella(checks);
+  const status = document.getElementById('t' + dayIndex + '_status');
+  const statusText = 'umbrella:\n' + decision.answer;
+  const statusLabel = 'Umbrella: ' + decision.answer + (decision.note ? '. ' + decision.note : '');
+  if (status.innerText !== statusText) {
+    status.innerText = statusText;
+  }
+  if (status.getAttribute('aria-label') !== statusLabel) {
+    status.setAttribute('aria-label', statusLabel);
+  }
+  const symbol = document.getElementById('t' + dayIndex + '_symbol');
+  symbol.innerText = decision.answer === 'YES' ? '(๑-﹏-๑)' : '(๑╹ᆺ╹)';
+  document.getElementById('t' + dayIndex + '_note').innerText = decision.note;
+}
+
+function setPageError(message) {
+  document.getElementById('t0_status').innerText = 'umbrella:\n?';
+  document.getElementById('t1_status').innerText = 'umbrella:\n?';
+  document.getElementById('t0_status').setAttribute('aria-label', 'Umbrella: unknown. ' + message);
+  document.getElementById('t1_status').setAttribute('aria-label', 'Umbrella: unknown. ' + message);
+  document.getElementById('t0_breakdown').style.display = 'none';
+  document.getElementById('t1_breakdown').style.display = 'none';
+}
+
+let latestForecasts = null;
+let lastRenderBucket = null;
+let loadSequence = 0;
+
+function renderLatestForecast() {
+  if (!latestForecasts) {
+    return;
+  }
+  const currentTimeKey = getCurrentLocalTimeKey(PETERBOROUGH_TIME_ZONE);
+  const todayKey = currentTimeKey.slice(0, 10);
+  const completedChecks = CHECKS.filter(check => {
+    const end = todayKey + 'T' + String(check.startHour + 1).padStart(2, '0') + ':00';
+    return end <= currentTimeKey;
+  }).length;
+  const renderBucket = todayKey + '|' + completedChecks;
+  if (renderBucket === lastRenderBucket) {
+    return;
+  }
+  const tomorrowKey = addDays(todayKey, 1);
+  renderDay(0, todayKey, buildChecks(todayKey, latestForecasts, currentTimeKey));
+  renderDay(1, tomorrowKey, buildChecks(tomorrowKey, latestForecasts));
+  lastRenderBucket = renderBucket;
+}
+
+async function loadForecast() {
+  const thisLoad = ++loadSequence;
+  latestForecasts = null;
+  lastRenderBucket = null;
+  const routeStatus = document.getElementById('route_status');
+  const retryButton = document.getElementById('forecast_retry');
+  retryButton.style.display = 'none';
+  routeStatus.innerText = 'checking the peterborough route...';
+  [0, 1].forEach(dayIndex => {
+    const status = document.getElementById('t' + dayIndex + '_status');
+    status.innerText = 'checking...';
+    status.removeAttribute('aria-label');
+    document.getElementById('t' + dayIndex + '_breakdown').style.display = 'none';
+  });
+
+  try {
+    const params = new URLSearchParams({
+      latitude: PUBLIC_FORECAST_POINTS.map(point => point.latitude).join(','),
+      longitude: PUBLIC_FORECAST_POINTS.map(point => point.longitude).join(','),
+      hourly: 'precipitation',
+      timezone: PETERBOROUGH_TIME_ZONE,
+      forecast_days: '3',
+      models: 'ukmo_seamless'
+    });
+    const response = await fetch('https://api.open-meteo.com/v1/forecast?' + params, {
+      referrerPolicy: 'no-referrer',
+      credentials: 'omit',
+      cache: 'no-store'
+    });
+    if (!response.ok) {
+      throw new Error('weather service unavailable');
+    }
+
+    const data = await response.json();
+    if (thisLoad !== loadSequence) {
+      return;
+    }
+    const locations = Array.isArray(data) ? data : [data];
+    if (locations.length !== PUBLIC_FORECAST_POINTS.length) {
+      throw new Error('The route forecast is incomplete.');
+    }
+    latestForecasts = locations.map(indexHourlyForecast);
+    renderLatestForecast();
+    routeStatus.innerText = '2 public forecast areas · no phone location used';
+  } catch (error) {
+    if (thisLoad !== loadSequence) {
+      return;
+    }
+    const message = error && error.message ? error.message : 'could not load the forecast';
+    setPageError(message);
+    routeStatus.innerText = message;
+    retryButton.style.display = 'inline-block';
+  }
+}
+
+setInitialDates();
+document.getElementById('forecast_retry').addEventListener('click', loadForecast);
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) {
+    loadForecast();
+  }
+});
+window.addEventListener('pageshow', event => {
+  if (event.persisted) {
+    loadForecast();
+  }
+});
+window.setInterval(() => {
+  if (!document.hidden) {
+    renderLatestForecast();
+  }
+}, 60 * 1000);
+loadForecast();
+</script>
+</body>
+</html>
